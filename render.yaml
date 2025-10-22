@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: tm-fetcher
+    name: tm-fetch
     env: node
     plan: starter
     autoDeploy: true
