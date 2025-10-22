@@ -3,12 +3,10 @@ import * as cheerio from "cheerio";
 
 const app = express();
 app.use(express.json());
-
 const PORT = Number(process.env.PORT || 10000);
 const BASE = process.env.BASE_PATH || "/tm";
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36";
-
 const PW_ARGS = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"];
 const BROWSERS_PATH =
   process.env.PLAYWRIGHT_BROWSERS_PATH || "/opt/render/.cache/ms-playwright";
@@ -150,42 +148,43 @@ async function fetchStaticList(url: string, debugList?: any): Promise<string[]> 
 
 async function fetchRenderedList(url: string, debugList?: any): Promise<string[]> {
   const { chromium } = await import("playwright");
-  const browser = await chromium.launch({
-    headless: true,
-    args: PW_ARGS
-  });
+  let browser;
   try {
+    browser = await chromium.launch({
+      headless: true,
+      args: PW_ARGS,
+    });
     const ctx = await browser.newContext({
       userAgent: UA,
       viewport: { width: 1280, height: 900 },
-      javaScriptEnabled: true
+      javaScriptEnabled: true,
     });
     const page = await ctx.newPage();
-    await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
-
+    await page.goto(url, { waitUntil: "networkidle", timeout: 90000 });
     try {
       const btn = await page.locator('button:has-text("Accept")').first();
       if (await btn.isVisible({ timeout: 2000 })) await btn.click();
     } catch {}
-
     await page.evaluate(async () => {
       await new Promise<void>((resolve) => {
         let y = 0;
         const step = () => {
           y += 1400;
-          (window as any).scrollTo(0, y);
+          window.scrollTo(0, y);
           if (y > document.body.scrollHeight * 0.95) resolve();
           else setTimeout(step, 200);
         };
         step();
       });
     });
-
     const html = await page.content();
     if (debugList) debugList.renderedHtmlLen = html.length;
     return extractProfileUrlsFromHtml(html, debugList);
+  } catch (e: any) {
+    if (debugList) debugList.error = `Playwright render failed: ${e.message}`;
+    throw e;
   } finally {
-    await browser.close();
+    if (browser) await browser.close();
   }
 }
 
@@ -209,29 +208,24 @@ async function parsePropertyPage(url: string, debugProp?: any): Promise<PropRow 
     const html = await fetchHtml(url, debugProp);
     const $ = cheerio.load(html);
     const text = $.root().text().replace(/\s+/g, " ").trim();
-
     const h1 = $("h1, h2").first().text().trim() || "";
     const address =
       h1 ||
       $('meta[property="og:title"]').attr("content") ||
       ($('meta[name="twitter:title"]').attr("content") || "").trim() ||
       null;
-
     const soldMatch =
       text.match(/\b(Sold|Last sold|Auctioned)\s*(on)?\s*\b(\d{1,2}\s+[A-Za-z]{3,9}\.?\s+\d{4}|\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
     const sold_date_text = soldMatch ? soldMatch[0] : null;
     const sold_date = sold_date_text ? parseNZDate(sold_date_text) : null;
-
     const priceChunk =
       (text.match(/\b(Sold for|Sold price|Price|SOLD:)\s*\$[\d,\.]+(?:\s*[mMkK])?/i)?.[0]) ||
       (text.match(/\$\s*[\d,\.]+\s*(m|k)?\b\s*(sold|price)/i)?.[0]) ||
       null;
     const sold_price_text = priceChunk;
     const sold_price_nzd = priceChunk ? parseMoneyNZD(priceChunk) : null;
-
     let cv_value_text: string | null = null;
     let cv_updated: string | null = null;
-
     const cvBlock =
       text.match(/(Capital value|CV|Rateable value|RV)[^$]{0,160}\$[0-9,\.mMkK]+/i)?.[0] || null;
     if (cvBlock) cv_value_text = cvBlock;
@@ -239,14 +233,10 @@ async function parsePropertyPage(url: string, debugProp?: any): Promise<PropRow 
       const cvLoose = text.match(/\b(Capital value|Rateable value|CV|RV)\b.*?\$[0-9,\.mMkK]+/i)?.[0] || null;
       if (cvLoose) cv_value_text = cvLoose;
     }
-
     const updatedMatch = text.match(/Updated:\s*\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}/i);
     cv_updated = updatedMatch ? updatedMatch[0].replace(/Updated:\s*/i, "").trim() : null;
-
     const cv_value_nzd = cv_value_text ? parseMoneyNZD(cv_value_text) : null;
-
     if (!sold_price_nzd || !cv_value_nzd) return null;
-
     return {
       address,
       sold_date_text,
@@ -265,14 +255,15 @@ async function parsePropertyPage(url: string, debugProp?: any): Promise<PropRow 
 }
 
 function buildSearchUrls(region: string, suburb: string, district?: string, rows = 150, pages = 3) {
-  const bases: string[] = [];
-  bases.push(`https://www.trademe.co.nz/a/property/insights/search/${encodeURIComponent(region)}/${encodeURIComponent(suburb)}?off_market=false&rows=${rows}`);
-  if (district) {
-    bases.push(`https://www.trademe.co.nz/a/property/insights/search/${encodeURIComponent(district)}/${encodeURIComponent(suburb)}?off_market=false&rows=${rows}`);
-    bases.push(`https://www.trademe.co.nz/a/property/insights/search/${encodeURIComponent(region)}/${encodeURIComponent(district)}?off_market=false&rows=${rows}`);
+  const isTest = process.argv.includes('--test');
+  const bases = new Set<string>();
+  bases.add(`https://www.trademe.co.nz/a/property/insights/search/${encodeURIComponent(region)}/${encodeURIComponent(suburb)}?off_market=false&rows=${rows}`);
+  if (district && !isTest) {
+    bases.add(`https://www.trademe.co.nz/a/property/insights/search/${encodeURIComponent(district)}/${encodeURIComponent(suburb)}?off_market=false&rows=${rows}`);
+    bases.add(`https://www.trademe.co.nz/a/property/insights/search/${encodeURIComponent(region)}/${encodeURIComponent(district)}?off_market=false&rows=${rows}`);
   }
   const withPages: string[] = [];
-  for (const b of bases) for (let p = 1; p <= pages; p++) withPages.push(`${b}&page=${p}`);
+  for (const b of bases) for (let p = 1; p <= (isTest ? 1 : pages); p++) withPages.push(`${b}&page=${p}`);
   return withPages;
 }
 
@@ -280,6 +271,7 @@ function buildSearchUrls(region: string, suburb: string, district?: string, rows
 app.get(`${BASE}/health`, (_req, res) =>
   res.json({ ok: true, browsersPath: BROWSERS_PATH, ua: UA })
 );
+
 app.get(`/health`, (_req, res) =>
   res.json({ ok: true, browsersPath: BROWSERS_PATH, ua: UA })
 );
@@ -290,43 +282,22 @@ app.get([`${BASE}/insights`, `/insights`], async (req: Request, res: Response) =
   const suburb = String(req.query.suburb || "");
   const district = String(req.query.district || region);
   const rows = Number(req.query.rows ?? 150);
-  const pages = Number(req.query.pages ?? 3);
+  const pages = process.argv.includes('--test') ? 1 : Number(req.query.pages ?? 3);
   const months = Number(req.query.months_window ?? 12);
-
   if (!suburb) return res.status(400).json({ error: "suburb required" });
-
   const searchUrls = buildSearchUrls(region, suburb, district, rows, pages);
-
   const listsDbg: any[] = [];
   const seen = new Set<string>();
   const propertyUrls: string[] = [];
-
+  const isDev = process.argv.includes('--dev');
+  if (isDev) console.log(`[${new Date().toISOString()}] Fetching ${searchUrls.length} search URLs`);
   for (const u of searchUrls) {
     const ldbg: any = { url: u };
     const urls = await getListUrls(u, ldbg);
     listsDbg.push(ldbg);
     for (const p of urls) if (!seen.has(p)) { seen.add(p); propertyUrls.push(p); }
+    if (isDev) console.log(`[${new Date().toISOString()}] Extracted ${urls.length} URLs from ${u}`);
   }
-
   const out: PropRow[] = [];
   const propsDbg: any[] = [];
-  for (const purl of propertyUrls) {
-    const pdbg: any = { url: purl };
-    const row = await parsePropertyPage(purl, pdbg);
-    propsDbg.push(pdbg);
-    if (!row) continue;
-    if (row.sold_date && withinMonths(row.sold_date, months)) out.push(row);
-  }
-
-  const payload: any = { count: out.length, results: out };
-  if (debug) payload.debug = { searchUrls, lists: listsDbg, propertyUrlsCount: propertyUrls.length, properties: propsDbg };
-
-  res.json(payload);
-});
-
-app.use((_req, res) => res.status(404).json({ error: "not_found" }));
-
-app.listen(PORT, () => {
-  console.log(`Fetcher live :${PORT} base=${BASE}`);
-  console.log(`PLAYWRIGHT_BROWSERS_PATH=${BROWSERS_PATH}`);
-});
+  for (const purl of
