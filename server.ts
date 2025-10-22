@@ -6,11 +6,14 @@ app.use(express.json());
 
 const PORT = Number(process.env.PORT || 10000);
 const BASE = process.env.BASE_PATH || "/tm";
-const USE_PW = true; // force Playwright path on Render
-
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36";
 
+const PW_ARGS = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"];
+const BROWSERS_PATH =
+  process.env.PLAYWRIGHT_BROWSERS_PATH || "/opt/render/.cache/ms-playwright";
+
+// ---------- helpers ----------
 type PropRow = {
   address: string | null;
   sold_date_text: string | null;
@@ -23,6 +26,11 @@ type PropRow = {
   tm_property_url: string;
   source: "trademe";
 };
+
+function log(...args: any[]) {
+  const ts = new Date().toISOString();
+  console.log(`[${ts}]`, ...args);
+}
 
 function monthToNum(m: string): number | null {
   const t = m.toLowerCase();
@@ -84,7 +92,17 @@ function parseMoneyNZD(text: string): number | null {
   return null;
 }
 
-async function fetchHtml(url: string): Promise<string> {
+function withinMonths(isoDate: string | null, months: number): boolean {
+  if (!isoDate) return false;
+  const d = new Date(isoDate + "T12:00:00+13:00");
+  if (isNaN(d.getTime())) return false;
+  const now = new Date();
+  const cutoff = new Date(now);
+  cutoff.setMonth(now.getMonth() - months);
+  return d >= cutoff && d <= now;
+}
+
+async function fetchHtml(url: string, debugBag?: any): Promise<string> {
   const res = await fetch(url, {
     headers: {
       "User-Agent": UA,
@@ -98,77 +116,14 @@ async function fetchHtml(url: string): Promise<string> {
       "Referer": "https://www.trademe.co.nz/"
     }
   });
+  if (debugBag) debugBag.http = { status: res.status, ok: res.ok, url };
   if (!res.ok) throw new Error(`GET ${url} => ${res.status}`);
-  return await res.text();
+  const text = await res.text();
+  if (debugBag) debugBag.htmlLen = text.length;
+  return text;
 }
 
-function withinMonths(isoDate: string | null, months: number): boolean {
-  if (!isoDate) return false;
-  const d = new Date(isoDate + "T12:00:00+13:00");
-  if (isNaN(d.getTime())) return false;
-  const now = new Date();
-  const cutoff = new Date(now);
-  cutoff.setMonth(now.getMonth() - months);
-  return d >= cutoff && d <= now;
-}
-
-async function parsePropertyPage(url: string): Promise<PropRow | null> {
-  const html = await fetchHtml(url);
-  const $ = cheerio.load(html);
-  const text = $.root().text().replace(/\s+/g, " ").trim();
-
-  const h1 = $("h1, h2").first().text().trim() || "";
-  const address =
-    h1 ||
-    $('meta[property="og:title"]').attr("content") ||
-    ($('meta[name="twitter:title"]').attr("content") || "").trim() ||
-    null;
-
-  const soldMatch =
-    text.match(/\b(Sold|Last sold|Auctioned)\s*(on)?\s*\b(\d{1,2}\s+[A-Za-z]{3,9}\.?\s+\d{4}|\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
-  const sold_date_text = soldMatch ? soldMatch[0] : null;
-  const sold_date = sold_date_text ? parseNZDate(sold_date_text) : null;
-
-  const priceChunk =
-    (text.match(/\b(Sold for|Sold price|Price|SOLD:)\s*\$[\d,\.]+(?:\s*[mMkK])?/i)?.[0]) ||
-    (text.match(/\$\s*[\d,\.]+\s*(m|k)?\b\s*(sold|price)/i)?.[0]) ||
-    null;
-  const sold_price_text = priceChunk;
-  const sold_price_nzd = priceChunk ? parseMoneyNZD(priceChunk) : null;
-
-  let cv_value_text: string | null = null;
-  let cv_updated: string | null = null;
-
-  const cvBlock =
-    text.match(/(Capital value|CV|Rateable value|RV)[^$]{0,160}\$[0-9,\.mMkK]+/i)?.[0] || null;
-  if (cvBlock) cv_value_text = cvBlock;
-  else {
-    const cvLoose = text.match(/\b(Capital value|Rateable value|CV|RV)\b.*?\$[0-9,\.mMkK]+/i)?.[0] || null;
-    if (cvLoose) cv_value_text = cvLoose;
-  }
-
-  const updatedMatch = text.match(/Updated:\s*\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}/i);
-  cv_updated = updatedMatch ? updatedMatch[0].replace(/Updated:\s*/i, "").trim() : null;
-
-  const cv_value_nzd = cv_value_text ? parseMoneyNZD(cv_value_text) : null;
-
-  if (!sold_price_nzd || !cv_value_nzd) return null;
-
-  return {
-    address,
-    sold_date_text,
-    sold_date,
-    sold_price_text,
-    sold_price_nzd,
-    cv_value_text,
-    cv_value_nzd,
-    cv_updated,
-    tm_property_url: url,
-    source: "trademe"
-  };
-}
-
-function extractProfileUrlsFromHtml(html: string): string[] {
+function extractProfileUrlsFromHtml(html: string, debugList?: any): string[] {
   const urls = new Set<string>();
   for (const m of html.matchAll(/https?:\/\/www\.trademe\.co\.nz\/a\/property\/insights\/profile\/[^\s"'<)]+/g))
     urls.add(m[0]);
@@ -187,19 +142,21 @@ function extractProfileUrlsFromHtml(html: string): string[] {
       urls.add(fixed);
     }
   });
-  return Array.from(urls);
+  const arr = Array.from(urls);
+  if (debugList) debugList.extractedCount = arr.length;
+  return arr;
 }
 
-async function fetchStaticList(url: string): Promise<string[]> {
-  const html = await fetchHtml(url);
-  return extractProfileUrlsFromHtml(html);
+async function fetchStaticList(url: string, debugList?: any): Promise<string[]> {
+  const html = await fetchHtml(url, debugList);
+  return extractProfileUrlsFromHtml(html, debugList);
 }
 
-async function fetchRenderedList(url: string): Promise<string[]> {
+async function fetchRenderedList(url: string, debugList?: any): Promise<string[]> {
   const { chromium } = await import("playwright");
   const browser = await chromium.launch({
     headless: true,
-    args: ["--no-sandbox", "--disable-dev-shm-usage"]
+    args: PW_ARGS
   });
   try {
     const ctx = await browser.newContext({
@@ -210,13 +167,11 @@ async function fetchRenderedList(url: string): Promise<string[]> {
     const page = await ctx.newPage();
     await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
 
-    // Accept cookies if present
     try {
       const btn = await page.locator('button:has-text("Accept")').first();
       if (await btn.isVisible({ timeout: 2000 })) await btn.click();
     } catch {}
 
-    // Scroll to trigger lazy load
     await page.evaluate(async () => {
       await new Promise<void>((resolve) => {
         let y = 0;
@@ -231,17 +186,96 @@ async function fetchRenderedList(url: string): Promise<string[]> {
     });
 
     const html = await page.content();
-    return extractProfileUrlsFromHtml(html);
+    if (debugList) debugList.renderedHtmlLen = html.length;
+    return extractProfileUrlsFromHtml(html, debugList);
   } finally {
     await browser.close();
   }
 }
 
-async function getListUrls(url: string): Promise<string[]> {
-  const s = await fetchStaticList(url);
-  if (s.length > 0) return s;
-  if (!USE_PW) return [];
-  return await fetchRenderedList(url);
+async function getListUrls(url: string, debugList?: any): Promise<string[]> {
+  try {
+    const s = await fetchStaticList(url, debugList);
+    if (s.length > 0) {
+      debugList.mode = "static";
+      return s;
+    }
+    debugList.mode = "rendered";
+    return await fetchRenderedList(url, debugList);
+  } catch (e: any) {
+    debugList.error = e?.message || String(e);
+    return [];
+  }
+}
+
+async function parsePropertyPage(url: string, debugProp?: any): Promise<PropRow | null> {
+  try {
+    const html = await fetchHtml(url, debugProp);
+    const $ = cheerio.load(html);
+    const text = $.root().text().replace(/\s+/g, " ").trim();
+
+    const h1 = $("h1, h2").first().text().trim() || "";
+    const address =
+      h1 ||
+      $('meta[property="og:title"]').attr("content") ||
+      ($('meta[name="twitter:title"]').attr("content") || "").trim() ||
+      null;
+
+    const soldMatch =
+      text.match(/\b(Sold|Last sold|Auctioned)\s*(on)?\s*\b(\d{1,2}\s+[A-Za-z]{3,9}\.?\s+\d{4}|\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
+    const sold_date_text = soldMatch ? soldMatch[0] : null;
+    const sold_date = sold_date_text ? parseNZDate(sold_date_text) : null;
+
+    const priceChunk =
+      (text.match(/\b(Sold for|Sold price|Price|SOLD:)\s*\$[\d,\.]+(?:\s*[mMkK])?/i)?.[0]) ||
+      (text.match(/\$\s*[\d,\.]+\s*(m|k)?\b\s*(sold|price)/i)?.[0]) ||
+      null;
+    const sold_price_text = priceChunk;
+    const sold_price_nzd = priceChunk ? parseMoneyNZD(priceChunk) : null;
+
+    let cv_value_text: string | null = null;
+    let cv_updated: string | null = null;
+
+    const cvBlock =
+      text.match(/(Capital value|CV|Rateable value|RV)[^$]{0,160}\$[0-9,\.mMkK]+/i)?.[0] || null;
+    if (cvBlock) cv_value_text = cvBlock;
+    else {
+      const cvLoose = text.match(/\b(Capital value|Rateable value|CV|RV)\b.*?\$[0-9,\.mMkK]+/i)?.[0] || null;
+      if (cvLoose) cv_value_text = cvLoose;
+    }
+
+    const updatedMatch = text.match(/Updated:\s*\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}/i);
+    cv_updated = updatedMatch ? updatedMatch[0].replace(/Updated:\s*/i, "").trim() : null;
+
+    const cv_value_nzd = cv_value_text ? parseMoneyNZD(cv_value_text) : null;
+
+    if (debugProp) {
+      debugProp.address = address;
+      debugProp.sold_date_text = sold_date_text;
+      debugProp.sold_date = sold_date;
+      debugProp.sold_price_text = sold_price_text;
+      debugProp.cv_value_text = cv_value_text;
+      debugProp.cv_updated = cv_updated;
+    }
+
+    if (!sold_price_nzd || !cv_value_nzd) return null;
+
+    return {
+      address,
+      sold_date_text,
+      sold_date,
+      sold_price_text,
+      sold_price_nzd,
+      cv_value_text,
+      cv_value_nzd,
+      cv_updated,
+      tm_property_url: url,
+      source: "trademe"
+    };
+  } catch (e: any) {
+    if (debugProp) debugProp.error = e?.message || String(e);
+    return null;
+  }
 }
 
 function buildSearchUrls(region: string, suburb: string, district?: string, rows = 150, pages = 3) {
@@ -256,49 +290,81 @@ function buildSearchUrls(region: string, suburb: string, district?: string, rows
   return withPages;
 }
 
-// Routes
-app.get(`${BASE}/health`, (_req, res) => res.json({ ok: true, mode: "pw" }));
-app.get(`/health`, (_req, res) => res.json({ ok: true, mode: "pw" }));
+// ---------- routes ----------
+app.get(`${BASE}/health`, (_req, res) =>
+  res.json({ ok: true, browsersPath: BROWSERS_PATH, ua: UA })
+);
+app.get(`/health`, (_req, res) =>
+  res.json({ ok: true, browsersPath: BROWSERS_PATH, ua: UA })
+);
 
 app.get([`${BASE}/insights`, `/insights`], async (req: Request, res: Response) => {
+  const debug = String(req.query.debug || "") === "1";
+  const dbg: any = {
+    params: {
+      region: req.query.region || "auckland",
+      suburb: req.query.suburb,
+      district: req.query.district || req.query.region || "auckland",
+      rows: Number(req.query.rows ?? 150),
+      pages: Number(req.query.pages ?? 3),
+      months_window: Number(req.query.months_window ?? 12)
+    },
+    searchUrls: [],
+    lists: [] as any[],
+    properties: [] as any[],
+    errors: [] as any[]
+  };
+
   try {
-    const region = String(req.query.region || "auckland");
-    const suburb = String(req.query.suburb || "");
-    const district = req.query.district ? String(req.query.district) : region;
-    const rows = Number(req.query.rows ?? 150);
-    const months = Number(req.query.months_window ?? 12);
-    const pages = Number(req.query.pages ?? 3);
+    const region = String(dbg.params.region);
+    const suburb = String(dbg.params.suburb || "");
+    const district = String(dbg.params.district || region);
+    const rows = Number(dbg.params.rows);
+    const pages = Number(dbg.params.pages);
+    const months = Number(dbg.params.months_window);
 
     if (!suburb) return res.status(400).json({ error: "suburb required" });
 
     const searchUrls = buildSearchUrls(region, suburb, district, rows, pages);
+    dbg.searchUrls = searchUrls;
 
     const seen = new Set<string>();
     const propertyUrls: string[] = [];
+
+    // Fetch lists (static → rendered fallback), with per-URL debug
     for (const u of searchUrls) {
-      try {
-        const urls = await getListUrls(u);
-        for (const p of urls) if (!seen.has(p)) { seen.add(p); propertyUrls.push(p); }
-      } catch {}
+      const ldbg: any = { url: u };
+      const urls = await getListUrls(u, ldbg);
+      dbg.lists.push(ldbg);
+      for (const p of urls) if (!seen.has(p)) { seen.add(p); propertyUrls.push(p); }
     }
+    dbg.propertyUrlsCount = propertyUrls.length;
 
     const out: PropRow[] = [];
     for (const purl of propertyUrls) {
-      try {
-        const row = await parsePropertyPage(purl);
-        if (!row) continue;
-        if (row.sold_date && withinMonths(row.sold_date, months)) out.push(row);
-      } catch {}
+      const pdbg: any = { url: purl };
+      const row = await parsePropertyPage(purl, pdbg);
+      dbg.properties.push(pdbg);
+      if (!row) continue;
+      if (row.sold_date && withinMonths(row.sold_date, months)) out.push(row);
     }
 
-    res.json({ count: out.length, results: out });
+    const payload: any = { count: out.length, results: out };
+    if (debug) payload.debug = dbg;
+
+    log("RESULT", { count: out.length, urls: propertyUrls.length });
+    res.json(payload);
   } catch (e: any) {
-    res.status(500).json({ error: e?.message ?? "failed" });
+    dbg.errors.push(e?.message || String(e));
+    const payload: any = { error: e?.message || "failed" };
+    if (debug) payload.debug = dbg;
+    res.status(500).json(payload);
   }
 });
 
 app.use((_req, res) => res.status(404).json({ error: "not_found" }));
 
 app.listen(PORT, () => {
-  console.log(`Fetcher live :${PORT} base=${BASE}`);
+  log(`Fetcher live :${PORT} base=${BASE}`);
+  log(`PLAYWRIGHT_BROWSERS_PATH=${BROWSERS_PATH}`);
 });
