@@ -15,8 +15,15 @@ const UA_POOL = [
 const randUA = () => UA_POOL[Math.floor(Math.random() * UA_POOL.length)];
 
 async function withBrowser<T>(fn: (ctx: { browser: any }) => Promise<T>) {
-  const browser = await chromium.launch({ headless: true });
-  try { return await fn({ browser }); } finally { await browser.close(); }
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-dev-shm-usage"]
+  });
+  try {
+    return await fn({ browser });
+  } finally {
+    await browser.close();
+  }
 }
 
 app.post("/tm/insights", async (req, res) => {
