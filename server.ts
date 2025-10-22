@@ -1,13 +1,14 @@
-import express, { Request, Response } from "express";
+import express, { Request, Response, NextFunction } from "express";
 
 const app = express();
 app.use(express.json());
 
 const PORT: number = Number(process.env.PORT || 10000);
+// Optional base path via env; defaults to "/tm"
+const BASE: string = process.env.BASE_PATH || "/tm";
 
 /**
- * Minimal TM GraphQL client.
- * Paginates a few pages to increase yield.
+ * Minimal TM GraphQL client with pagination.
  */
 async function fetchInsights(
   region: string,
@@ -63,7 +64,7 @@ async function fetchInsights(
 
     if (!res.ok) {
       const txt = await res.text().catch(() => "");
-      throw new Error(`TM GraphQL ${res.status}: ${txt.slice(0, 400)}`);
+      throw new Error(⁠ TM GraphQL ${res.status}: ${txt.slice(0, 400)} ⁠);
     }
 
     const json = (await res.json()) as any;
@@ -87,16 +88,19 @@ async function fetchInsights(
     agency: x.agency?.name ?? null,
     phone: x.agency?.agentPhone ?? null,
     url: x.profileUrl
-      ? `https://www.trademe.co.nz/a/property/insights/profile/${x.profileUrl}`
+      ? ⁠ https://www.trademe.co.nz/a/property/insights/profile/${x.profileUrl} ⁠
       : null
   }));
 }
 
-app.get("/health", (_req: Request, res: Response) => {
+// Router mounted at BASE (default /tm)
+const router = express.Router();
+
+router.get("/health", (_req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
-app.get("/insights", async (req: Request, res: Response) => {
+router.get("/insights", async (req: Request, res: Response) => {
   try {
     const region = (req.query.region as string) || "auckland";
     const suburb = (req.query.suburb as string) || "";
@@ -110,8 +114,4 @@ app.get("/insights", async (req: Request, res: Response) => {
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? "fetch_failed" });
   }
-});
-
-app.listen(PORT, () => {
-  console.log(`Fetcher live on :${PORT}`);
 });
