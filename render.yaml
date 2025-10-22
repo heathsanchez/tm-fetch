@@ -8,6 +8,4 @@ services:
     startCommand: npm start
     envVars:
       - key: NODE_VERSION
-        value: 18
-      - key: PLAYWRIGHT_BROWSERS_PATH
-        value: "0"
+        value: "20"
