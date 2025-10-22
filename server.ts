@@ -6,9 +6,10 @@ app.use(express.json());
 
 const PORT = Number(process.env.PORT || 10000);
 const BASE = process.env.BASE_PATH || "/tm";
+const USE_PW = (process.env.PLAYWRIGHT || "1") === "1";
 
 const UA =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36";
 
 type PropRow = {
   address: string | null;
@@ -97,7 +98,8 @@ async function fetchHtml(url: string): Promise<string> {
       "Pragma": "no-cache",
       "Sec-Fetch-Mode": "navigate",
       "Sec-Fetch-Dest": "document",
-      "Sec-Fetch-Site": "none"
+      "Sec-Fetch-Site": "none",
+      "Referer": "https://www.trademe.co.nz/"
     }
   });
   if (!res.ok) throw new Error(`GET ${url} => ${res.status}`);
@@ -142,7 +144,7 @@ async function parsePropertyPage(url: string): Promise<PropRow | null> {
   let cv_updated: string | null = null;
 
   const cvBlock =
-    text.match(/(Capital value|CV|Rateable value|RV)[^$]{0,120}\$[0-9,\.mMkK]+/i)?.[0] || null;
+    text.match(/(Capital value|CV|Rateable value|RV)[^$]{0,160}\$[0-9,\.mMkK]+/i)?.[0] || null;
   if (cvBlock) cv_value_text = cvBlock;
   else {
     const cvLoose = text.match(/\b(Capital value|Rateable value|CV|RV)\b.*?\$[0-9,\.mMkK]+/i)?.[0] || null;
@@ -170,27 +172,27 @@ async function parsePropertyPage(url: string): Promise<PropRow | null> {
   };
 }
 
-// --- Robust extraction of profile URLs from search HTML (regex + JSON fallback) ---
+// ---------- SEARCH EXTRACTION ----------
+
 function extractProfileUrlsFromHtml(html: string): string[] {
   const urls = new Set<string>();
 
-  // 1) Regex scan across the whole HTML (handles CSR apps where anchors aren’t in DOM yet)
-  for (const m of html.matchAll(/https?:\/\/www\.trademe\.co\.nz\/a\/property\/insights\/profile\/[^\s"'<)]+/g)) {
+  // Regex over raw HTML
+  for (const m of html.matchAll(/https?:\/\/www\.trademe\.co\.nz\/a\/property\/insights\/profile\/[^\s"'<)]+/g))
     urls.add(m[0]);
-  }
+
   for (const m of html.matchAll(/"\/a\/property\/insights\/profile\/[^"']+"/g)) {
     const rel = m[0].slice(1, -1);
     urls.add(`https://www.trademe.co.nz${rel}`);
   }
 
-  // 2) Look inside <script> tags for serialized JSON containing profile hrefs
+  // JSON-in-script fallback
   const $ = cheerio.load(html);
   $("script").each((_i, s) => {
     const txt = ($(s).html() || "").toString();
     if (!txt) return;
-    for (const m of txt.matchAll(/"href":"(\/a\/property\/insights\/profile\/[^"]+)"/g)) {
+    for (const m of txt.matchAll(/"href":"(\/a\/property\/insights\/profile\/[^"]+)"/g))
       urls.add(`https://www.trademe.co.nz${m[1]}`);
-    }
     for (const m of txt.matchAll(/https?:\\\/\\\/www\.trademe\.co\.nz\\\/a\\\/property\\\/insights\\\/profile\\\/[^"\\]+/g)) {
       const fixed = m[0].replace(/\\\//g, "/");
       urls.add(fixed);
@@ -200,64 +202,90 @@ function extractProfileUrlsFromHtml(html: string): string[] {
   return Array.from(urls);
 }
 
-async function parseSearchList(url: string, limit = 150): Promise<string[]> {
+async function fetchStaticList(url: string): Promise<string[]> {
   const html = await fetchHtml(url);
-  const urls = extractProfileUrlsFromHtml(html);
-  return urls.slice(0, limit);
+  return extractProfileUrlsFromHtml(html);
+}
+
+// Playwright path (only if enabled)
+async function fetchRenderedList(url: string): Promise<string[]> {
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const ctx = await browser.newContext({
+      userAgent: UA,
+      viewport: { width: 1280, height: 900 },
+      javaScriptEnabled: true
+    });
+    const page = await ctx.newPage();
+    await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
+
+    // Scroll to trigger lazy load
+    await page.evaluate(async () => {
+      await new Promise<void>((resolve) => {
+        let y = 0;
+        const step = () => {
+          y += 1200;
+          window.scrollTo(0, y);
+          if (y > document.body.scrollHeight * 0.95) resolve();
+          else setTimeout(step, 200);
+        };
+        step();
+      });
+    });
+
+    const html = await page.content();
+    return extractProfileUrlsFromHtml(html);
+  } finally {
+    await browser.close();
+  }
+}
+
+async function getListUrls(url: string): Promise<string[]> {
+  // try static first (cheap)
+  const s = await fetchStaticList(url);
+  if (s.length > 0 || !USE_PW) return s;
+  // then rendered if allowed
+  return await fetchRenderedList(url);
 }
 
 function buildSearchUrls(region: string, suburb: string, district?: string, rows = 150, pages = 3) {
   const bases: string[] = [];
-  // Region/Suburb
   bases.push(`https://www.trademe.co.nz/a/property/insights/search/${encodeURIComponent(region)}/${encodeURIComponent(suburb)}?off_market=false&rows=${rows}`);
-  // District/Suburb (fallback)
   if (district) {
     bases.push(`https://www.trademe.co.nz/a/property/insights/search/${encodeURIComponent(district)}/${encodeURIComponent(suburb)}?off_market=false&rows=${rows}`);
-    // Region/District (broad)
     bases.push(`https://www.trademe.co.nz/a/property/insights/search/${encodeURIComponent(region)}/${encodeURIComponent(district)}?off_market=false&rows=${rows}`);
   }
-
   const withPages: string[] = [];
-  for (const b of bases) {
-    for (let p = 1; p <= pages; p++) {
-      withPages.push(`${b}&page=${p}`);
-    }
-  }
+  for (const b of bases) for (let p = 1; p <= pages; p++) withPages.push(`${b}&page=${p}`);
   return withPages;
 }
 
-// --- Handlers ---
+// ---------- ROUTES ----------
 
-const healthHandler = (_req: Request, res: Response) => {
-  res.json({ ok: true });
-};
+app.get(`${BASE}/health`, (_req, res) => res.json({ ok: true, pw: USE_PW ? "on" : "off" }));
+app.get(`/health`, (_req, res) => res.json({ ok: true, pw: USE_PW ? "on" : "off" }));
 
-const insightsHandler = async (req: Request, res: Response) => {
+app.get([`${BASE}/insights`, `/insights`], async (req: Request, res: Response) => {
   try {
     const region = String(req.query.region || "auckland");
     const suburb = String(req.query.suburb || "");
     const district = req.query.district ? String(req.query.district) : region;
     const rows = Number(req.query.rows ?? 150);
     const months = Number(req.query.months_window ?? 12);
+    const pages = Number(req.query.pages ?? 3);
 
     if (!suburb) return res.status(400).json({ error: "suburb required" });
 
-    const searchUrls = buildSearchUrls(region, suburb, district, rows, 3);
+    const searchUrls = buildSearchUrls(region, suburb, district, rows, pages);
 
     const seen = new Set<string>();
     const propertyUrls: string[] = [];
     for (const u of searchUrls) {
       try {
-        const urls = await parseSearchList(u, rows);
-        for (const p of urls) {
-          if (!seen.has(p)) {
-            seen.add(p);
-            propertyUrls.push(p);
-          }
-        }
-      } catch {
-        // continue
-      }
+        const urls = await getListUrls(u);
+        for (const p of urls) if (!seen.has(p)) { seen.add(p); propertyUrls.push(p); }
+      } catch { /* continue */ }
     }
 
     const out: PropRow[] = [];
@@ -265,30 +293,18 @@ const insightsHandler = async (req: Request, res: Response) => {
       try {
         const row = await parsePropertyPage(purl);
         if (!row) continue;
-        if (row.sold_date && withinMonths(row.sold_date, months)) {
-          out.push(row);
-        }
-      } catch {
-        // skip
-      }
+        if (row.sold_date && withinMonths(row.sold_date, months)) out.push(row);
+      } catch { /* skip */ }
     }
 
     res.json({ count: out.length, results: out });
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? "failed" });
   }
-};
-
-// --- Routes ---
-
-app.get(`${BASE}/health`, healthHandler);
-app.get(`${BASE}/insights`, insightsHandler);
-
-app.get("/health", healthHandler);
-app.get("/insights", insightsHandler);
+});
 
 app.use((_req, res) => res.status(404).json({ error: "not_found" }));
 
 app.listen(PORT, () => {
-  console.log(`Fetcher live on :${PORT} (base: ${BASE})`);
+  console.log(`Fetcher live on :${PORT} (base: ${BASE}) Playwright=${USE_PW ? "on" : "off"}`);
 });
