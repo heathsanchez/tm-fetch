@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: tm-fetcher
+    env: node
+    plan: starter
+    autoDeploy: true
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: 18
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: "0"
