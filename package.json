@@ -1,18 +1,21 @@
 {
   "name": "tm-fetcher",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "scripts": {
     "build": "tsc",
     "start": "node dist/server.js",
-    "postinstall": "npx playwright install --with-deps"
+    "postinstall": "npx playwright install chromium"
   },
   "dependencies": {
-    "crypto": "^1.0.1",
     "express": "^4.19.2",
     "playwright": "^1.47.2"
   },
   "devDependencies": {
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "@types/node": "^20.11.30"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
