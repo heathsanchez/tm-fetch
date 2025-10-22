@@ -11,8 +11,7 @@ RUN apk add --no-cache \
     ttf-freefont
 
 # Set Playwright environment variables
-ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
-    PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser \
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser \
     PLAYWRIGHT_BROWSERS_PATH=/opt/render/.cache/ms-playwright \
     PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1
 
@@ -20,7 +19,7 @@ ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
 WORKDIR /app
 
 # Copy package files and install dependencies
-COPY package.json package-lock.json* ./
+COPY package.json package-lock.json ./
 RUN npm ci && npm run install-browsers
 
 # Copy source code and build
