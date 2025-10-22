@@ -2,12 +2,14 @@ services:
   - type: web
     name: tm-fetch
     env: node
-    plan: starter
-    autoDeploy: true
-    buildCommand: npm install && npm run build
+    plan: free
+    region: oregon
+    buildCommand: npm ci && npm run build
     startCommand: npm start
     envVars:
       - key: NODE_VERSION
-        value: "20"
+        value: 20
       - key: PLAYWRIGHT_BROWSERS_PATH
-        value: "/opt/render/.cache/ms-playwright"
+        value: /opt/render/.cache/ms-playwright
+      - key: PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS
+        value: "1"
