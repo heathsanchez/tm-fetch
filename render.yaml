@@ -1,12 +1,10 @@
 services:
   - type: web
     name: tm-fetch
-    env: node
+    env: docker
     plan: free
     region: oregon
-    preBuildCommand: apt-get update && apt-get install -y libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2
-    buildCommand: npm ci && npm run build
-    startCommand: npm start
+    dockerfilePath: ./Dockerfile
     envVars:
       - key: NODE_VERSION
         value: 20
