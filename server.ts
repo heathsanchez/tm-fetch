@@ -43,10 +43,8 @@ function monthToNum(m: string): number | null {
 }
 
 function parseNZDate(text: string): string | null {
-  // Accept: "Sold on 15 Oct 2025", "Last sold on 5 Sept 2025", "Sold 01/09/2025"
   const t = text.replace(/,/g, " ").replace(/\s+/g, " ").trim();
 
-  // D/M/YYYY
   const dmy = t.match(/(\b\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
   if (dmy) {
     const d = Number(dmy[1]);
@@ -59,7 +57,6 @@ function parseNZDate(text: string): string | null {
     }
   }
 
-  // "15 Oct 2025" / "5 Sept 2025"
   const wd = t.match(/\b(\d{1,2})\s+([A-Za-z]{3,9})\.?\s+(\d{4})\b/);
   if (wd) {
     const d = Number(wd[1]);
@@ -73,11 +70,8 @@ function parseNZDate(text: string): string | null {
 }
 
 function parseMoneyNZD(text: string): number | null {
-  // Handles $1,875,000 or $1.65M style (converts to int)
   const t = text.replace(/\s/g, "");
-  const m1 = t.match(/\$?([\d,]+)(?:\.\d+)?/);
   const m2 = t.match(/\$?([\d.]+)\s*[mMkK]\b/);
-
   if (m2) {
     const val = parseFloat(m2[1]);
     if (!isNaN(val)) {
@@ -85,6 +79,7 @@ function parseMoneyNZD(text: string): number | null {
       return Math.round(val * mult);
     }
   }
+  const m1 = t.match(/\$?([\d,]+)(?:\.\d+)?/);
   if (m1) {
     const val = Number(m1[1].replace(/,/g, ""));
     if (!isNaN(val)) return val;
@@ -102,7 +97,7 @@ async function fetchHtml(url: string): Promise<string> {
 
 function withinMonths(isoDate: string | null, months: number): boolean {
   if (!isoDate) return false;
-  const d = new Date(isoDate + "T12:00:00+13:00"); // NZT safe-ish
+  const d = new Date(isoDate + "T12:00:00+13:00");
   if (isNaN(d.getTime())) return false;
   const now = new Date();
   const cutoff = new Date(now);
@@ -116,7 +111,6 @@ async function parsePropertyPage(url: string): Promise<PropRow | null> {
 
   const text = $.root().text().replace(/\s+/g, " ").trim();
 
-  // Address: try page h1, fallback from meta tags or breadcrumb
   const h1 = $("h1, h2").first().text().trim() || "";
   const address =
     h1 ||
@@ -124,13 +118,11 @@ async function parsePropertyPage(url: string): Promise<PropRow | null> {
     ($('meta[name="twitter:title"]').attr("content") || "").trim() ||
     null;
 
-  // Sold date text
   const soldMatch =
     text.match(/\b(Sold|Last sold|Auctioned)\s*(on)?\s*\b(\d{1,2}\s+[A-Za-z]{3,9}\.?\s+\d{4}|\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
   const sold_date_text = soldMatch ? soldMatch[0] : null;
   const sold_date = sold_date_text ? parseNZDate(sold_date_text) : null;
 
-  // Sold price text
   const priceChunk =
     (text.match(/\b(Sold for|Sold price|Price|SOLD:)\s*\$[\d,\.]+(?:\s*[mMkK])?/i)?.[0]) ||
     (text.match(/\$\s*[\d,\.]+\s*(m|k)?\b\s*(sold|price)/i)?.[0]) ||
@@ -138,26 +130,22 @@ async function parsePropertyPage(url: string): Promise<PropRow | null> {
   const sold_price_text = priceChunk;
   const sold_price_nzd = priceChunk ? parseMoneyNZD(priceChunk) : null;
 
-  // Capital value + update
   let cv_value_text: string | null = null;
   let cv_updated: string | null = null;
-  // Look for "Capital value" / "CV" / "Rateable value" / "RV"
+
   const cvBlock =
     text.match(/(Capital value|CV|Rateable value|RV)[^$]{0,80}\$[0-9,\.mMkK]+/i)?.[0] || null;
   if (cvBlock) {
     cv_value_text = cvBlock;
   } else {
-    // Try more generous capture
     const cvLoose = text.match(/\b(Capital value|Rateable value|CV|RV)\b.*?\$[0-9,\.mMkK]+/i)?.[0] || null;
     if (cvLoose) cv_value_text = cvLoose;
   }
-  // Updated date (e.g., "Updated: 01 May 2024")
   const updatedMatch = text.match(/Updated:\s*\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}/i);
   cv_updated = updatedMatch ? updatedMatch[0].replace(/Updated:\s*/i, "").trim() : null;
 
   const cv_value_nzd = cv_value_text ? parseMoneyNZD(cv_value_text) : null;
 
-  // Must have both price and CV to be useful
   if (!sold_price_nzd || !cv_value_nzd) return null;
 
   return {
@@ -182,14 +170,8 @@ async function parseSearchList(url: string, limit = 150): Promise<string[]> {
   $('a[href*="/a/property/insights/profile/"]').each((_, el) => {
     const href = $(el).attr("href");
     if (!href) return;
-    // Make absolute
-    const abs = href.startsWith("http")
-      ? href
-      : `https://www.trademe.co.nz${href}`;
-    // Only keep property profile pages
-    if (/\/a\/property\/insights\/profile\//.test(abs)) {
-      links.add(abs);
-    }
+    const abs = href.startsWith("http") ? href : `https://www.trademe.co.nz${href}`;
+    if (/\/a\/property\/insights\/profile\//.test(abs)) links.add(abs);
   });
 
   return Array.from(links).slice(0, limit);
@@ -197,24 +179,21 @@ async function parseSearchList(url: string, limit = 150): Promise<string[]> {
 
 function buildSearchUrls(region: string, suburb: string, district?: string, rows = 150) {
   const urls: string[] = [];
-  // Region/Suburb
   urls.push(`https://www.trademe.co.nz/a/property/insights/search/${encodeURIComponent(region)}/${encodeURIComponent(suburb)}?off_market=false&rows=${rows}`);
-  // District/Suburb (fallback)
   if (district) {
     urls.push(`https://www.trademe.co.nz/a/property/insights/search/${encodeURIComponent(district)}/${encodeURIComponent(suburb)}?off_market=false&rows=${rows}`);
-  }
-  // Region/District (broad)
-  if (district) {
     urls.push(`https://www.trademe.co.nz/a/property/insights/search/${encodeURIComponent(region)}/${encodeURIComponent(district)}?off_market=false&rows=${rows}`);
   }
   return urls;
 }
 
-app.get(`${BASE}/health`, (_req: Request, res: Response) => {
-  res.json({ ok: true });
-});
+// --- Handlers shared for both BASE and root routes ---
 
-app.get(`${BASE}/insights`, async (req: Request, res: Response) => {
+const healthHandler = (_req: Request, res: Response) => {
+  res.json({ ok: true });
+};
+
+const insightsHandler = async (req: Request, res: Response) => {
   try {
     const region = String(req.query.region || "auckland");
     const suburb = String(req.query.suburb || "");
@@ -238,7 +217,7 @@ app.get(`${BASE}/insights`, async (req: Request, res: Response) => {
           }
         }
       } catch {
-        // continue to next source
+        // continue
       }
     }
 
@@ -247,33 +226,28 @@ app.get(`${BASE}/insights`, async (req: Request, res: Response) => {
       try {
         const row = await parsePropertyPage(purl);
         if (!row) continue;
-        // filter by months window
         if (row.sold_date && withinMonths(row.sold_date, months)) {
           out.push(row);
         }
       } catch {
-        // ignore individual failures
+        // skip
       }
     }
 
-    res.json({
-      count: out.length,
-      results: out
-    });
+    res.json({ count: out.length, results: out });
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? "failed" });
   }
-});
+};
+
+// --- Mount routes ---
+
+app.get(`${BASE}/health`, healthHandler);
+app.get(`${BASE}/insights`, insightsHandler);
 
 // Back-compat root routes
-app.get("/insights", (req, res) => {
-  req.url = `${BASE}/insights${req.url.includes("?") ? "&" : "?"}__=1`;
-  app.handle(req, res);
-});
-app.get("/health", (req, res) => {
-  req.url = `${BASE}/health`;
-  app.handle(req, res);
-});
+app.get("/health", healthHandler);
+app.get("/insights", insightsHandler);
 
 // 404 JSON
 app.use((_req, res) => res.status(404).json({ error: "not_found" }));
