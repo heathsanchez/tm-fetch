@@ -1,5 +1,4 @@
 import express from "express";
-import fetch from "node-fetch";
 
 const app = express();
 app.use(express.json());
@@ -7,7 +6,6 @@ const PORT = process.env.PORT || 10000;
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
-// --- Helper: query Trade Me GraphQL API ---
 async function fetchInsights(region: string, suburb: string, rows = 150) {
   const query = `
     query PropertyInsightsSearch($filters: PropertyInsightsSearchFilters, $rows: Int, $page: Int) {
@@ -59,10 +57,8 @@ async function fetchInsights(region: string, suburb: string, rows = 150) {
   const json = await res.json();
   const data = json?.data?.propertyInsightsSearch?.results || [];
 
-  // Format clean list
   return data.map((x: any) => ({
     id: x.id,
-    title: x.title,
     address: x.address,
     bedrooms: x.bedrooms,
     bathrooms: x.bathrooms,
@@ -80,7 +76,6 @@ async function fetchInsights(region: string, suburb: string, rows = 150) {
   }));
 }
 
-// --- API endpoint ---
 app.get("/insights", async (req, res) => {
   try {
     const suburb = (req.query.suburb as string) || "";
