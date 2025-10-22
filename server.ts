@@ -64,7 +64,7 @@ async function fetchInsights(
 
     if (!res.ok) {
       const txt = await res.text().catch(() => "");
-      throw new Error(⁠ TM GraphQL ${res.status}: ${txt.slice(0, 400)} ⁠);
+      throw new Error(`TM GraphQL ${res.status}: ${txt.slice(0, 400)}`);
     }
 
     const json = (await res.json()) as any;
@@ -88,7 +88,7 @@ async function fetchInsights(
     agency: x.agency?.name ?? null,
     phone: x.agency?.agentPhone ?? null,
     url: x.profileUrl
-      ? ⁠ https://www.trademe.co.nz/a/property/insights/profile/${x.profileUrl} ⁠
+      ? `https://www.trademe.co.nz/a/property/insights/profile/${x.profileUrl}`
       : null
   }));
 }
@@ -114,4 +114,22 @@ router.get("/insights", async (req: Request, res: Response) => {
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? "fetch_failed" });
   }
+});
+
+app.use(BASE, router);
+
+// Back-compat: also serve at root /insights and /health
+app.get("/insights", (req: Request, res: Response, next: NextFunction) => {
+  (router as any).handle({ ...req, url: "/insights" }, res, next);
+});
+app.get("/health", (req: Request, res: Response, next: NextFunction) => {
+  (router as any).handle({ ...req, url: "/health" }, res, next);
+});
+
+// JSON 404
+app.use((_req, res) => res.status(404).json({ error: "not_found" }));
+
+app.listen(PORT, () => {
+  // eslint-disable-next-line no-console
+  console.log(`Fetcher live on :${PORT} (base: ${BASE})`);
 });
