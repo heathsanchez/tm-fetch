@@ -209,8 +209,8 @@ async function fetchStaticList(url: string): Promise<string[]> {
 
 // Playwright path (only if enabled)
 async function fetchRenderedList(url: string): Promise<string[]> {
-  const { chromium } = await import("playwright");
-  const browser = await chromium.launch({ headless: true });
+const { chromium } = await import("playwright-core");
+const browser = await chromium.launch({ headless: true });
   try {
     const ctx = await browser.newContext({
       userAgent: UA,
