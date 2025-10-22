@@ -182,7 +182,8 @@ async function fetchRenderedList(url: string, debugList?: any): Promise<string[]
     return extractProfileUrlsFromHtml(html, debugList);
   } catch (e: any) {
     if (debugList) debugList.error = `Playwright render failed: ${e.message}`;
-    throw e;
+    console.error(`[${new Date().toISOString()}] Playwright failed for ${url}: ${e.message}`);
+    return [];
   } finally {
     if (browser) await browser.close();
   }
@@ -199,6 +200,7 @@ async function getListUrls(url: string, debugList?: any): Promise<string[]> {
     return await fetchRenderedList(url, debugList);
   } catch (e: any) {
     debugList.error = e?.message || String(e);
+    console.error(`[${new Date().toISOString()}] getListUrls failed for ${url}: ${e.message}`);
     return [];
   }
 }
@@ -249,7 +251,8 @@ async function parsePropertyPage(url: string, debugProp?: any): Promise<PropRow 
       tm_property_url: url,
       source: "trademe"
     };
-  } catch {
+  } catch (e: any) {
+    console.error(`[${new Date().toISOString()}] parsePropertyPage failed for ${url}: ${e.message}`);
     return null;
   }
 }
@@ -285,12 +288,12 @@ app.get([`${BASE}/insights`, `/insights`], async (req: Request, res: Response) =
   const pages = process.argv.includes('--test') ? 1 : Number(req.query.pages ?? 3);
   const months = Number(req.query.months_window ?? 12);
   if (!suburb) return res.status(400).json({ error: "suburb required" });
+  const isDev = process.argv.includes('--dev');
   const searchUrls = buildSearchUrls(region, suburb, district, rows, pages);
+  if (isDev) console.log(`[${new Date().toISOString()}] Fetching ${searchUrls.length} search URLs`);
   const listsDbg: any[] = [];
   const seen = new Set<string>();
   const propertyUrls: string[] = [];
-  const isDev = process.argv.includes('--dev');
-  if (isDev) console.log(`[${new Date().toISOString()}] Fetching ${searchUrls.length} search URLs`);
   for (const u of searchUrls) {
     const ldbg: any = { url: u };
     const urls = await getListUrls(u, ldbg);
@@ -300,4 +303,22 @@ app.get([`${BASE}/insights`, `/insights`], async (req: Request, res: Response) =
   }
   const out: PropRow[] = [];
   const propsDbg: any[] = [];
-  for (const purl of
+  for (const purl of propertyUrls) {
+    const pdbg: any = { url: purl };
+    const row = await parsePropertyPage(purl, pdbg);
+    propsDbg.push(pdbg);
+    if (!row) continue;
+    if (row.sold_date && withinMonths(row.sold_date, months)) out.push(row);
+    if (isDev) console.log(`[${new Date().toISOString()}] Processed ${purl}: ${row ? 'success' : 'failed'}`);
+  }
+  const payload: any = { count: out.length, results: out };
+  if (debug) payload.debug = { searchUrls, lists: listsDbg, propertyUrlsCount: propertyUrls.length, properties: propsDbg };
+  res.json(payload);
+});
+
+app.use((_req, res) => res.status(404).json({ error: "not_found" }));
+
+app.listen(PORT, () => {
+  console.log(`Fetcher live :${PORT} base=${BASE}`);
+  console.log(`PLAYWRIGHT_BROWSERS_PATH=${BROWSERS_PATH}`);
+});
