@@ -1,19 +1,20 @@
 {
   "name": "tm-fetcher",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "type": "module",
   "scripts": {
     "build": "tsc",
+    "prestart": "node -e \"process.env.PLAYWRIGHT_BROWSERS_PATH=process.env.PLAYWRIGHT_BROWSERS_PATH||'/opt/render/.cache/ms-playwright'; try{require('child_process').execSync('npx playwright install chromium', {stdio:'inherit'});}catch(e){console.log('prestart install skipped/error:', e?.message||e);}\"",
     "start": "node dist/server.js",
-    "postinstall": "npx playwright install chromium"
+    "postinstall": "PLAYWRIGHT_BROWSERS_PATH=/opt/render/.cache/ms-playwright npx playwright install chromium"
   },
   "dependencies": {
     "express": "^4.19.2",
     "playwright": "^1.47.2"
   },
   "devDependencies": {
-    "typescript": "^5.6.3",
-    "@types/node": "^20.11.30"
+    "@types/node": "^20.11.30",
+    "typescript": "^5.6.3"
   },
   "engines": {
     "node": ">=20"
