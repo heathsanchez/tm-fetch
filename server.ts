@@ -63,7 +63,7 @@ async function fetchInsights(
 
     if (!res.ok) {
       const txt = await res.text().catch(() => "");
-      throw new Error(⁠ TM GraphQL ${res.status}: ${txt.slice(0, 400)} ⁠);
+      throw new Error(`TM GraphQL ${res.status}: ${txt.slice(0, 400)}`);
     }
 
     const json = (await res.json()) as any;
@@ -87,7 +87,7 @@ async function fetchInsights(
     agency: x.agency?.name ?? null,
     phone: x.agency?.agentPhone ?? null,
     url: x.profileUrl
-      ? ⁠ https://www.trademe.co.nz/a/property/insights/profile/${x.profileUrl} ⁠
+      ? `https://www.trademe.co.nz/a/property/insights/profile/${x.profileUrl}`
       : null
   }));
 }
@@ -113,5 +113,5 @@ app.get("/insights", async (req: Request, res: Response) => {
 });
 
 app.listen(PORT, () => {
-  console.log(⁠ Fetcher live on :${PORT} ⁠);
+  console.log(`Fetcher live on :${PORT}`);
 });
