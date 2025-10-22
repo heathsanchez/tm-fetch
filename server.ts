@@ -1,5 +1,5 @@
 import express, { Request, Response } from "express";
-import { chromium } from "playwright";
+import fetch from "node-fetch";
 import * as cheerio from "cheerio";
 
 const app = express();
@@ -8,9 +8,9 @@ const PORT = Number(process.env.PORT || 10000);
 const BASE = process.env.BASE_PATH || "/tm";
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36";
-const PW_ARGS = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"];
-const BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH || "/opt/render/.cache/ms-playwright";
+const SCRAPERAPI_KEY = process.env.SCRAPERAPI_KEY || "";
 
+// ---------- types ----------
 type PropRow = {
   address: string | null;
   sold_date_text: string | null;
@@ -24,28 +24,50 @@ type PropRow = {
   source: "trademe";
 };
 
-async function fetchHtml(url: string, debugBag?: any): Promise<string> {
+// ---------- helpers ----------
+async function fetchHtml(url: string, debugBag?: any, retries = 3): Promise<string> {
   const isDev = process.argv.includes('--dev');
-  if (isDev) console.log(`[${new Date().toISOString()}] Fetching HTML from ${url}`);
-  const res = await fetch(url, {
-    headers: {
-      "User-Agent": UA,
-      "Accept": "text/html,application/xhtml+xml",
-      "Accept-Language": "en-NZ,en;q=0.9",
-      "Cache-Control": "no-cache",
-      "Pragma": "no-cache",
-      "Sec-Fetch-Mode": "navigate",
-      "Sec-Fetch-Dest": "document",
-      "Sec-Fetch-Site": "none",
-      "Referer": "https://www.trademe.co.nz/"
+  const proxyUrl = SCRAPERAPI_KEY
+    ? `http://api.scraperapi.com?api_key=${SCRAPERAPI_KEY}&url=${encodeURIComponent(url)}&render=true`
+    : url;
+  if (isDev) console.log(`[${new Date().toISOString()}] Fetching HTML from ${proxyUrl}, attempt ${4 - retries}`);
+  for (let i = 0; i < retries; i++) {
+    try {
+      const res = await fetch(proxyUrl, {
+        headers: {
+          "User-Agent": UA,
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+          "Accept-Language": "en-NZ,en;q=0.9",
+          "Cache-Control": "no-cache",
+          "Pragma": "no-cache",
+          "Sec-Fetch-Mode": "navigate",
+          "Sec-Fetch-Dest": "document",
+          "Sec-Fetch-Site": "none",
+          "Referer": "https://www.trademe.co.nz/"
+        }
+      });
+      if (debugBag) debugBag.http = { status: res.status, ok: res.ok, url: proxyUrl };
+      if (!res.ok) throw new Error(`GET ${proxyUrl} => ${res.status}`);
+      const text = await res.text();
+      if (debugBag) debugBag.htmlLen = text.length;
+      if (isDev) console.log(`[${new Date().toISOString()}] Fetched ${text.length} bytes from ${proxyUrl}`);
+      if (text.includes("Please verify you are not a robot") || text.includes("Access denied")) {
+        throw new Error("Detected CAPTCHA or access denied");
+      }
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      return text;
+    } catch (e: any) {
+      if (debugBag) debugBag.error = e.message;
+      if (isDev) console.error(`[${new Date().toISOString()}] Fetch failed for ${proxyUrl}: ${e.message}`);
+      if (i < retries - 1) {
+        if (isDev) console.log(`[${new Date().toISOString()}] Retrying ${proxyUrl} (${retries - i - 1} attempts left)`);
+        await new Promise(resolve => setTimeout(resolve, 2000 * (i + 1)));
+        continue;
+      }
+      throw e;
     }
-  });
-  if (debugBag) debugBag.http = { status: res.status, ok: res.ok, url };
-  if (!res.ok) throw new Error(`GET ${url} => ${res.status}`);
-  const text = await res.text();
-  if (debugBag) debugBag.htmlLen = text.length;
-  if (isDev) console.log(`[${new Date().toISOString()}] Fetched ${text.length} bytes from ${url}`);
-  return text;
+  }
+  throw new Error(`Failed to fetch ${proxyUrl} after ${retries} attempts`);
 }
 
 function extractProfileUrlsFromHtml(html: string, debugList?: any): string[] {
@@ -72,79 +94,6 @@ function extractProfileUrlsFromHtml(html: string, debugList?: any): string[] {
   const arr = Array.from(urls);
   if (debugList) debugList.extractedCount = arr.length;
   return arr;
-}
-
-async function fetchStaticList(url: string, debugList?: any): Promise<string[]> {
-  const html = await fetchHtml(url, debugList);
-  return extractProfileUrlsFromHtml(html, debugList);
-}
-
-async function fetchRenderedList(url: string, debugList?: any): Promise<string[]> {
-  const isDev = process.argv.includes('--dev');
-  let browser;
-  try {
-    browser = await chromium.launch({
-      headless: true,
-      args: PW_ARGS
-    });
-    const ctx = await browser.newContext({
-      userAgent: UA,
-      viewport: { width: 1280, height: 900 },
-      javaScriptEnabled: true,
-    });
-    const page = await ctx.newPage();
-    if (isDev) console.log(`[${new Date().toISOString()}] Navigating to ${url} with Playwright`);
-    await page.goto(url, { waitUntil: "networkidle", timeout: 90000 });
-    try {
-      const btn = await page.locator('button:has-text("Accept")').first();
-      if (await btn.isVisible({ timeout: 2000 })) {
-        if (isDev) console.log(`[${new Date().toISOString()}] Clicking Accept button`);
-        await btn.click();
-      }
-    } catch {}
-    if (isDev) console.log(`[${new Date().toISOString()}] Scrolling page ${url}`);
-    await page.evaluate(async () => {
-      await new Promise<void>((resolve) => {
-        let y = 0;
-        const step = () => {
-          y += 1400;
-          window.scrollTo(0, y);
-          if (y > document.body.scrollHeight * 0.95) resolve();
-          else setTimeout(step, 200);
-        };
-        step();
-      });
-    });
-    const html = await page.content();
-    if (debugList) debugList.renderedHtmlLen = html.length;
-    if (isDev) console.log(`[${new Date().toISOString()}] Extracted ${html.length} bytes from ${url}`);
-    return extractProfileUrlsFromHtml(html, debugList);
-  } catch (e: any) {
-    if (debugList) debugList.error = `Playwright render failed: ${e.message}`;
-    if (isDev) console.error(`[${new Date().toISOString()}] Playwright failed for ${url}: ${e.message}`);
-    return [];
-  } finally {
-    if (browser) await browser.close();
-  }
-}
-
-async function getListUrls(url: string, debugList?: any): Promise<string[]> {
-  const isDev = process.argv.includes('--dev');
-  try {
-    const s = await fetchStaticList(url, debugList);
-    if (s.length > 0) {
-      debugList.mode = "static";
-      if (isDev) console.log(`[${new Date().toISOString()}] Used static fetch for ${url}`);
-      return s;
-    }
-    debugList.mode = "rendered";
-    if (isDev) console.log(`[${new Date().toISOString()}] Falling back to Playwright for ${url}`);
-    return await fetchRenderedList(url, debugList);
-  } catch (e: any) {
-    debugList.error = e?.message || String(e);
-    if (isDev) console.error(`[${new Date().toISOString()}] getListUrls failed for ${url}: ${e.message}`);
-    return [];
-  }
 }
 
 async function fetchPropertyData(url: string, debugProp?: any): Promise<PropRow | null> {
@@ -184,7 +133,7 @@ async function fetchPropertyData(url: string, debugProp?: any): Promise<PropRow 
       if (isDev) console.log(`[${new Date().toISOString()}] Skipped ${url}: missing sold_price_nzd or cv_value_nzd`);
       return null;
     }
-    const row = {
+    const row: PropRow = {
       address,
       sold_date_text,
       sold_date,
@@ -289,11 +238,11 @@ function buildSearchUrls(region: string, suburb: string, district?: string, rows
 
 // ---------- routes ----------
 app.get(`${BASE}/health`, (_req, res) =>
-  res.json({ ok: true, browsersPath: BROWSERS_PATH, ua: UA })
+  res.json({ ok: true, ua: UA })
 );
 
 app.get(`/health`, (_req, res) =>
-  res.json({ ok: true, browsersPath: BROWSERS_PATH, ua: UA })
+  res.json({ ok: true, ua: UA })
 );
 
 app.get([`${BASE}/insights`, `/insights`], async (req: Request, res: Response) => {
@@ -305,6 +254,9 @@ app.get([`${BASE}/insights`, `/insights`], async (req: Request, res: Response) =
   const pages = process.argv.includes('--test') ? 1 : Number(req.query.pages || 3);
   const months = Number(req.query.months_window || 12);
   if (!suburb) return res.status(400).json({ error: "suburb required" });
+  if (!SCRAPERAPI_KEY && !process.argv.includes('--test')) {
+    return res.status(500).json({ error: "SCRAPERAPI_KEY environment variable is required" });
+  }
   const isDev = process.argv.includes('--dev');
   const searchUrls = buildSearchUrls(region, suburb, district, rows, pages);
   if (isDev) console.log(`[${new Date().toISOString()}] Fetching ${searchUrls.length} search URLs: ${JSON.stringify(searchUrls)}`);
@@ -314,7 +266,8 @@ app.get([`${BASE}/insights`, `/insights`], async (req: Request, res: Response) =
   for (const u of searchUrls) {
     const ldbg: any = { url: u };
     try {
-      const urls = await getListUrls(u, ldbg);
+      const html = await fetchHtml(u, ldbg);
+      const urls = extractProfileUrlsFromHtml(html, ldbg);
       listsDbg.push(ldbg);
       for (const p of urls) if (!seen.has(p)) { seen.add(p); propertyUrls.push(p); }
       if (isDev) console.log(`[${new Date().toISOString()}] Extracted ${urls.length} URLs from ${u}`);
@@ -342,5 +295,5 @@ app.use((_req, res) => res.status(404).json({ error: "not_found" }));
 
 app.listen(PORT, () => {
   console.log(`Fetcher running on port ${PORT} base=${BASE}`);
-  console.log(`PLAYWRIGHT_BROWSERS_PATH=${BROWSERS_PATH}`);
+  console.log(`SCRAPERAPI_KEY=${SCRAPERAPI_KEY ? 'set' : 'not set'}`);
 });
