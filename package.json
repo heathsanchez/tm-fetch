@@ -1,18 +1,17 @@
 {
   "name": "tm-fetcher",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "private": true,
   "type": "module",
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/server.js",
-    "postinstall": "npx playwright install chromium"
+    "start": "node dist/server.js"
   },
   "dependencies": {
     "cheerio": "^1.0.0-rc.12",
     "express": "^4.19.2",
-    "playwright": "^1.46.0"
+    "playwright-core": "^1.46.0"
   },
   "devDependencies": {
     "@types/cheerio": "^0.22.35",
