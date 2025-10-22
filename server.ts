@@ -89,7 +89,16 @@ function parseMoneyNZD(text: string): number | null {
 
 async function fetchHtml(url: string): Promise<string> {
   const res = await fetch(url, {
-    headers: { "User-Agent": UA, "Accept": "text/html,application/xhtml+xml" }
+    headers: {
+      "User-Agent": UA,
+      "Accept": "text/html,application/xhtml+xml",
+      "Accept-Language": "en-NZ,en;q=0.9",
+      "Cache-Control": "no-cache",
+      "Pragma": "no-cache",
+      "Sec-Fetch-Mode": "navigate",
+      "Sec-Fetch-Dest": "document",
+      "Sec-Fetch-Site": "none"
+    }
   });
   if (!res.ok) throw new Error(`GET ${url} => ${res.status}`);
   return await res.text();
@@ -108,7 +117,6 @@ function withinMonths(isoDate: string | null, months: number): boolean {
 async function parsePropertyPage(url: string): Promise<PropRow | null> {
   const html = await fetchHtml(url);
   const $ = cheerio.load(html);
-
   const text = $.root().text().replace(/\s+/g, " ").trim();
 
   const h1 = $("h1, h2").first().text().trim() || "";
@@ -134,13 +142,13 @@ async function parsePropertyPage(url: string): Promise<PropRow | null> {
   let cv_updated: string | null = null;
 
   const cvBlock =
-    text.match(/(Capital value|CV|Rateable value|RV)[^$]{0,80}\$[0-9,\.mMkK]+/i)?.[0] || null;
-  if (cvBlock) {
-    cv_value_text = cvBlock;
-  } else {
+    text.match(/(Capital value|CV|Rateable value|RV)[^$]{0,120}\$[0-9,\.mMkK]+/i)?.[0] || null;
+  if (cvBlock) cv_value_text = cvBlock;
+  else {
     const cvLoose = text.match(/\b(Capital value|Rateable value|CV|RV)\b.*?\$[0-9,\.mMkK]+/i)?.[0] || null;
     if (cvLoose) cv_value_text = cvLoose;
   }
+
   const updatedMatch = text.match(/Updated:\s*\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}/i);
   cv_updated = updatedMatch ? updatedMatch[0].replace(/Updated:\s*/i, "").trim() : null;
 
@@ -162,32 +170,63 @@ async function parsePropertyPage(url: string): Promise<PropRow | null> {
   };
 }
 
-async function parseSearchList(url: string, limit = 150): Promise<string[]> {
-  const html = await fetchHtml(url);
-  const $ = cheerio.load(html);
+// --- Robust extraction of profile URLs from search HTML (regex + JSON fallback) ---
+function extractProfileUrlsFromHtml(html: string): string[] {
+  const urls = new Set<string>();
 
-  const links = new Set<string>();
-  $('a[href*="/a/property/insights/profile/"]').each((_, el) => {
-    const href = $(el).attr("href");
-    if (!href) return;
-    const abs = href.startsWith("http") ? href : `https://www.trademe.co.nz${href}`;
-    if (/\/a\/property\/insights\/profile\//.test(abs)) links.add(abs);
+  // 1) Regex scan across the whole HTML (handles CSR apps where anchors aren’t in DOM yet)
+  for (const m of html.matchAll(/https?:\/\/www\.trademe\.co\.nz\/a\/property\/insights\/profile\/[^\s"'<)]+/g)) {
+    urls.add(m[0]);
+  }
+  for (const m of html.matchAll(/"\/a\/property\/insights\/profile\/[^"']+"/g)) {
+    const rel = m[0].slice(1, -1);
+    urls.add(`https://www.trademe.co.nz${rel}`);
+  }
+
+  // 2) Look inside <script> tags for serialized JSON containing profile hrefs
+  const $ = cheerio.load(html);
+  $("script").each((_i, s) => {
+    const txt = ($(s).html() || "").toString();
+    if (!txt) return;
+    for (const m of txt.matchAll(/"href":"(\/a\/property\/insights\/profile\/[^"]+)"/g)) {
+      urls.add(`https://www.trademe.co.nz${m[1]}`);
+    }
+    for (const m of txt.matchAll(/https?:\\\/\\\/www\.trademe\.co\.nz\\\/a\\\/property\\\/insights\\\/profile\\\/[^"\\]+/g)) {
+      const fixed = m[0].replace(/\\\//g, "/");
+      urls.add(fixed);
+    }
   });
 
-  return Array.from(links).slice(0, limit);
+  return Array.from(urls);
 }
 
-function buildSearchUrls(region: string, suburb: string, district?: string, rows = 150) {
-  const urls: string[] = [];
-  urls.push(`https://www.trademe.co.nz/a/property/insights/search/${encodeURIComponent(region)}/${encodeURIComponent(suburb)}?off_market=false&rows=${rows}`);
+async function parseSearchList(url: string, limit = 150): Promise<string[]> {
+  const html = await fetchHtml(url);
+  const urls = extractProfileUrlsFromHtml(html);
+  return urls.slice(0, limit);
+}
+
+function buildSearchUrls(region: string, suburb: string, district?: string, rows = 150, pages = 3) {
+  const bases: string[] = [];
+  // Region/Suburb
+  bases.push(`https://www.trademe.co.nz/a/property/insights/search/${encodeURIComponent(region)}/${encodeURIComponent(suburb)}?off_market=false&rows=${rows}`);
+  // District/Suburb (fallback)
   if (district) {
-    urls.push(`https://www.trademe.co.nz/a/property/insights/search/${encodeURIComponent(district)}/${encodeURIComponent(suburb)}?off_market=false&rows=${rows}`);
-    urls.push(`https://www.trademe.co.nz/a/property/insights/search/${encodeURIComponent(region)}/${encodeURIComponent(district)}?off_market=false&rows=${rows}`);
+    bases.push(`https://www.trademe.co.nz/a/property/insights/search/${encodeURIComponent(district)}/${encodeURIComponent(suburb)}?off_market=false&rows=${rows}`);
+    // Region/District (broad)
+    bases.push(`https://www.trademe.co.nz/a/property/insights/search/${encodeURIComponent(region)}/${encodeURIComponent(district)}?off_market=false&rows=${rows}`);
   }
-  return urls;
+
+  const withPages: string[] = [];
+  for (const b of bases) {
+    for (let p = 1; p <= pages; p++) {
+      withPages.push(`${b}&page=${p}`);
+    }
+  }
+  return withPages;
 }
 
-// --- Handlers shared for both BASE and root routes ---
+// --- Handlers ---
 
 const healthHandler = (_req: Request, res: Response) => {
   res.json({ ok: true });
@@ -203,7 +242,7 @@ const insightsHandler = async (req: Request, res: Response) => {
 
     if (!suburb) return res.status(400).json({ error: "suburb required" });
 
-    const searchUrls = buildSearchUrls(region, suburb, district, rows);
+    const searchUrls = buildSearchUrls(region, suburb, district, rows, 3);
 
     const seen = new Set<string>();
     const propertyUrls: string[] = [];
@@ -240,16 +279,14 @@ const insightsHandler = async (req: Request, res: Response) => {
   }
 };
 
-// --- Mount routes ---
+// --- Routes ---
 
 app.get(`${BASE}/health`, healthHandler);
 app.get(`${BASE}/insights`, insightsHandler);
 
-// Back-compat root routes
 app.get("/health", healthHandler);
 app.get("/insights", insightsHandler);
 
-// 404 JSON
 app.use((_req, res) => res.status(404).json({ error: "not_found" }));
 
 app.listen(PORT, () => {
