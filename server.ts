@@ -179,7 +179,7 @@ async function fetchRenderedList(url: string, debugList?: any): Promise<string[]
       });
     });
     const html = await page.content();
-    if (debugList) debugBag.renderedHtmlLen = html.length;
+    if (debugList) debugList.renderedHtmlLen = html.length;
     return extractProfileUrlsFromHtml(html, debugList);
   } catch (e: any) {
     if (debugList) debugList.error = `Playwright render failed: ${e.message}`;
