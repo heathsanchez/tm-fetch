@@ -1,26 +1,31 @@
 {
-  "name": "tm-fetch",
-  "version": "1.0.0",
-  "description": "Trade Me property scraper",
-  "main": "index.js",
+  "name": "tm-fetcher",
+  "version": "4.5.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/server.js",
   "scripts": {
-    "postinstall": "npx playwright install --with-deps",
-    "start": "node index.js",
-    "dev": "node index.js --dev",
-    "test": "node index.js --test",
-    "install-browsers": "npx playwright install --with-deps chromium",
-    "build": "npm ci && npm run install-browsers",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsc --watch & nodemon dist/server.js --dev",
+    "test": "node dist/server.js --test",
+    "install-browsers": "PLAYWRIGHT_BROWSERS_PATH=/opt/render/.cache/ms-playwright PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1 npx playwright install --with-deps chromium",
+    "postinstall": "npm run install-browsers",
+    "prebuild": "rm -rf dist",
     "deploy": "git add . && git commit -m 'Deploy update' && git push"
   },
   "dependencies": {
-    "playwright": "^1.47.0",
-    "axios": "^1.7.0",
-    "cheerio": "^1.0.0-rc.12"
+    "cheerio": "^1.0.0",
+    "express": "^4.21.1",
+    "playwright": "^1.47.2"
   },
   "devDependencies": {
-    "nodemon": "^3.1.4"
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.16.11",
+    "nodemon": "^3.1.7",
+    "typescript": "^5.6.3"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=20"
   }
 }
