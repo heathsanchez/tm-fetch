@@ -173,7 +173,7 @@ async function fetchRenderedList(url: string, debugList?: any): Promise<string[]
         let y = 0;
         const step = () => {
           y += 1400;
-          window.scrollTo(0, y);
+          (window as any).scrollTo(0, y);
           if (y > document.body.scrollHeight * 0.95) resolve();
           else setTimeout(step, 200);
         };
