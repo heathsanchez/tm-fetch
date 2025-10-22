@@ -6,7 +6,7 @@ app.use(express.json());
 
 const PORT = Number(process.env.PORT || 10000);
 const BASE = process.env.BASE_PATH || "/tm";
-const USE_PW = (process.env.PLAYWRIGHT || "1") === "1";
+const USE_PW = true; // force Playwright path on Render
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36";
@@ -45,27 +45,23 @@ function monthToNum(m: string): number | null {
 
 function parseNZDate(text: string): string | null {
   const t = text.replace(/,/g, " ").replace(/\s+/g, " ").trim();
-
   const dmy = t.match(/(\b\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
   if (dmy) {
     const d = Number(dmy[1]);
     const m = Number(dmy[2]);
     const y = Number(dmy[3].length === 2 ? ("20" + dmy[3]) : dmy[3]);
-    if (y >= 1900 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+    if (y >= 1900 && m >= 1 && m <= 12 && d >= 1 && d <= 31)
       return `${y.toString().padStart(4, "0")}-${m.toString().padStart(2, "0")}-${d
         .toString()
         .padStart(2, "0")}`;
-    }
   }
-
   const wd = t.match(/\b(\d{1,2})\s+([A-Za-z]{3,9})\.?\s+(\d{4})\b/);
   if (wd) {
     const d = Number(wd[1]);
     const m = monthToNum(wd[2]);
     const y = Number(wd[3]);
-    if (m && y >= 1900 && d >= 1 && d <= 31) {
+    if (m && y >= 1900 && d >= 1 && d <= 31)
       return `${y}-${m.toString().padStart(2, "0")}-${d.toString().padStart(2, "0")}`;
-    }
   }
   return null;
 }
@@ -172,21 +168,14 @@ async function parsePropertyPage(url: string): Promise<PropRow | null> {
   };
 }
 
-// ---------- SEARCH EXTRACTION ----------
-
 function extractProfileUrlsFromHtml(html: string): string[] {
   const urls = new Set<string>();
-
-  // Regex over raw HTML
   for (const m of html.matchAll(/https?:\/\/www\.trademe\.co\.nz\/a\/property\/insights\/profile\/[^\s"'<)]+/g))
     urls.add(m[0]);
-
   for (const m of html.matchAll(/"\/a\/property\/insights\/profile\/[^"']+"/g)) {
     const rel = m[0].slice(1, -1);
     urls.add(`https://www.trademe.co.nz${rel}`);
   }
-
-  // JSON-in-script fallback
   const $ = cheerio.load(html);
   $("script").each((_i, s) => {
     const txt = ($(s).html() || "").toString();
@@ -198,7 +187,6 @@ function extractProfileUrlsFromHtml(html: string): string[] {
       urls.add(fixed);
     }
   });
-
   return Array.from(urls);
 }
 
@@ -207,10 +195,12 @@ async function fetchStaticList(url: string): Promise<string[]> {
   return extractProfileUrlsFromHtml(html);
 }
 
-// Playwright path (only if enabled)
 async function fetchRenderedList(url: string): Promise<string[]> {
-const { chromium } = await import("playwright-core");
-const browser = await chromium.launch({ headless: true });
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-dev-shm-usage"]
+  });
   try {
     const ctx = await browser.newContext({
       userAgent: UA,
@@ -220,12 +210,18 @@ const browser = await chromium.launch({ headless: true });
     const page = await ctx.newPage();
     await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
 
+    // Accept cookies if present
+    try {
+      const btn = await page.locator('button:has-text("Accept")').first();
+      if (await btn.isVisible({ timeout: 2000 })) await btn.click();
+    } catch {}
+
     // Scroll to trigger lazy load
     await page.evaluate(async () => {
       await new Promise<void>((resolve) => {
         let y = 0;
         const step = () => {
-          y += 1200;
+          y += 1400;
           window.scrollTo(0, y);
           if (y > document.body.scrollHeight * 0.95) resolve();
           else setTimeout(step, 200);
@@ -242,10 +238,9 @@ const browser = await chromium.launch({ headless: true });
 }
 
 async function getListUrls(url: string): Promise<string[]> {
-  // try static first (cheap)
   const s = await fetchStaticList(url);
-  if (s.length > 0 || !USE_PW) return s;
-  // then rendered if allowed
+  if (s.length > 0) return s;
+  if (!USE_PW) return [];
   return await fetchRenderedList(url);
 }
 
@@ -261,10 +256,9 @@ function buildSearchUrls(region: string, suburb: string, district?: string, rows
   return withPages;
 }
 
-// ---------- ROUTES ----------
-
-app.get(`${BASE}/health`, (_req, res) => res.json({ ok: true, pw: USE_PW ? "on" : "off" }));
-app.get(`/health`, (_req, res) => res.json({ ok: true, pw: USE_PW ? "on" : "off" }));
+// Routes
+app.get(`${BASE}/health`, (_req, res) => res.json({ ok: true, mode: "pw" }));
+app.get(`/health`, (_req, res) => res.json({ ok: true, mode: "pw" }));
 
 app.get([`${BASE}/insights`, `/insights`], async (req: Request, res: Response) => {
   try {
@@ -285,7 +279,7 @@ app.get([`${BASE}/insights`, `/insights`], async (req: Request, res: Response) =
       try {
         const urls = await getListUrls(u);
         for (const p of urls) if (!seen.has(p)) { seen.add(p); propertyUrls.push(p); }
-      } catch { /* continue */ }
+      } catch {}
     }
 
     const out: PropRow[] = [];
@@ -294,7 +288,7 @@ app.get([`${BASE}/insights`, `/insights`], async (req: Request, res: Response) =
         const row = await parsePropertyPage(purl);
         if (!row) continue;
         if (row.sold_date && withinMonths(row.sold_date, months)) out.push(row);
-      } catch { /* skip */ }
+      } catch {}
     }
 
     res.json({ count: out.length, results: out });
@@ -306,5 +300,5 @@ app.get([`${BASE}/insights`, `/insights`], async (req: Request, res: Response) =
 app.use((_req, res) => res.status(404).json({ error: "not_found" }));
 
 app.listen(PORT, () => {
-  console.log(`Fetcher live on :${PORT} (base: ${BASE}) Playwright=${USE_PW ? "on" : "off"}`);
+  console.log(`Fetcher live :${PORT} base=${BASE}`);
 });
