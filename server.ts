@@ -13,7 +13,7 @@ const PW_ARGS = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"];
 const BROWSERS_PATH =
   process.env.PLAYWRIGHT_BROWSERS_PATH || "/opt/render/.cache/ms-playwright";
 
-// ---------- helpers ----------
+// ---------- types ----------
 type PropRow = {
   address: string | null;
   sold_date_text: string | null;
@@ -27,11 +27,7 @@ type PropRow = {
   source: "trademe";
 };
 
-function log(...args: any[]) {
-  const ts = new Date().toISOString();
-  console.log(`[${ts}]`, ...args);
-}
-
+// ---------- helpers ----------
 function monthToNum(m: string): number | null {
   const t = m.toLowerCase();
   const map: Record<string, number> = {
@@ -249,15 +245,6 @@ async function parsePropertyPage(url: string, debugProp?: any): Promise<PropRow 
 
     const cv_value_nzd = cv_value_text ? parseMoneyNZD(cv_value_text) : null;
 
-    if (debugProp) {
-      debugProp.address = address;
-      debugProp.sold_date_text = sold_date_text;
-      debugProp.sold_date = sold_date;
-      debugProp.sold_price_text = sold_price_text;
-      debugProp.cv_value_text = cv_value_text;
-      debugProp.cv_updated = cv_updated;
-    }
-
     if (!sold_price_nzd || !cv_value_nzd) return null;
 
     return {
@@ -272,8 +259,7 @@ async function parsePropertyPage(url: string, debugProp?: any): Promise<PropRow 
       tm_property_url: url,
       source: "trademe"
     };
-  } catch (e: any) {
-    if (debugProp) debugProp.error = e?.message || String(e);
+  } catch {
     return null;
   }
 }
@@ -300,71 +286,47 @@ app.get(`/health`, (_req, res) =>
 
 app.get([`${BASE}/insights`, `/insights`], async (req: Request, res: Response) => {
   const debug = String(req.query.debug || "") === "1";
-  const dbg: any = {
-    params: {
-      region: req.query.region || "auckland",
-      suburb: req.query.suburb,
-      district: req.query.district || req.query.region || "auckland",
-      rows: Number(req.query.rows ?? 150),
-      pages: Number(req.query.pages ?? 3),
-      months_window: Number(req.query.months_window ?? 12)
-    },
-    searchUrls: [],
-    lists: [] as any[],
-    properties: [] as any[],
-    errors: [] as any[]
-  };
+  const region = String(req.query.region || "auckland");
+  const suburb = String(req.query.suburb || "");
+  const district = String(req.query.district || region);
+  const rows = Number(req.query.rows ?? 150);
+  const pages = Number(req.query.pages ?? 3);
+  const months = Number(req.query.months_window ?? 12);
 
-  try {
-    const region = String(dbg.params.region);
-    const suburb = String(dbg.params.suburb || "");
-    const district = String(dbg.params.district || region);
-    const rows = Number(dbg.params.rows);
-    const pages = Number(dbg.params.pages);
-    const months = Number(dbg.params.months_window);
+  if (!suburb) return res.status(400).json({ error: "suburb required" });
 
-    if (!suburb) return res.status(400).json({ error: "suburb required" });
+  const searchUrls = buildSearchUrls(region, suburb, district, rows, pages);
 
-    const searchUrls = buildSearchUrls(region, suburb, district, rows, pages);
-    dbg.searchUrls = searchUrls;
+  const listsDbg: any[] = [];
+  const seen = new Set<string>();
+  const propertyUrls: string[] = [];
 
-    const seen = new Set<string>();
-    const propertyUrls: string[] = [];
-
-    // Fetch lists (static → rendered fallback), with per-URL debug
-    for (const u of searchUrls) {
-      const ldbg: any = { url: u };
-      const urls = await getListUrls(u, ldbg);
-      dbg.lists.push(ldbg);
-      for (const p of urls) if (!seen.has(p)) { seen.add(p); propertyUrls.push(p); }
-    }
-    dbg.propertyUrlsCount = propertyUrls.length;
-
-    const out: PropRow[] = [];
-    for (const purl of propertyUrls) {
-      const pdbg: any = { url: purl };
-      const row = await parsePropertyPage(purl, pdbg);
-      dbg.properties.push(pdbg);
-      if (!row) continue;
-      if (row.sold_date && withinMonths(row.sold_date, months)) out.push(row);
-    }
-
-    const payload: any = { count: out.length, results: out };
-    if (debug) payload.debug = dbg;
-
-    log("RESULT", { count: out.length, urls: propertyUrls.length });
-    res.json(payload);
-  } catch (e: any) {
-    dbg.errors.push(e?.message || String(e));
-    const payload: any = { error: e?.message || "failed" };
-    if (debug) payload.debug = dbg;
-    res.status(500).json(payload);
+  for (const u of searchUrls) {
+    const ldbg: any = { url: u };
+    const urls = await getListUrls(u, ldbg);
+    listsDbg.push(ldbg);
+    for (const p of urls) if (!seen.has(p)) { seen.add(p); propertyUrls.push(p); }
   }
+
+  const out: PropRow[] = [];
+  const propsDbg: any[] = [];
+  for (const purl of propertyUrls) {
+    const pdbg: any = { url: purl };
+    const row = await parsePropertyPage(purl, pdbg);
+    propsDbg.push(pdbg);
+    if (!row) continue;
+    if (row.sold_date && withinMonths(row.sold_date, months)) out.push(row);
+  }
+
+  const payload: any = { count: out.length, results: out };
+  if (debug) payload.debug = { searchUrls, lists: listsDbg, propertyUrlsCount: propertyUrls.length, properties: propsDbg };
+
+  res.json(payload);
 });
 
 app.use((_req, res) => res.status(404).json({ error: "not_found" }));
 
 app.listen(PORT, () => {
-  log(`Fetcher live :${PORT} base=${BASE}`);
-  log(`PLAYWRIGHT_BROWSERS_PATH=${BROWSERS_PATH}`);
+  console.log(`Fetcher live :${PORT} base=${BASE}`);
+  console.log(`PLAYWRIGHT_BROWSERS_PATH=${BROWSERS_PATH}`);
 });
