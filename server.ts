@@ -153,6 +153,7 @@ async function fetchRenderedList(url: string, debugList?: any): Promise<string[]
     browser = await chromium.launch({
       headless: true,
       args: PW_ARGS,
+      executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined
     });
     const ctx = await browser.newContext({
       userAgent: UA,
@@ -178,7 +179,7 @@ async function fetchRenderedList(url: string, debugList?: any): Promise<string[]
       });
     });
     const html = await page.content();
-    if (debugList) debugList.renderedHtmlLen = html.length;
+    if (debugList) debugBag.renderedHtmlLen = html.length;
     return extractProfileUrlsFromHtml(html, debugList);
   } catch (e: any) {
     if (debugList) debugList.error = `Playwright render failed: ${e.message}`;
@@ -284,9 +285,9 @@ app.get([`${BASE}/insights`, `/insights`], async (req: Request, res: Response) =
   const region = String(req.query.region || "auckland");
   const suburb = String(req.query.suburb || "");
   const district = String(req.query.district || region);
-  const rows = Number(req.query.rows ?? 150);
-  const pages = process.argv.includes('--test') ? 1 : Number(req.query.pages ?? 3);
-  const months = Number(req.query.months_window ?? 12);
+  const rows = Number(req.query.rows || 150);
+  const pages = process.argv.includes('--test') ? 1 : Number(req.query.pages || 3);
+  const months = Number(req.query.months_window || 12);
   if (!suburb) return res.status(400).json({ error: "suburb required" });
   const isDev = process.argv.includes('--dev');
   const searchUrls = buildSearchUrls(region, suburb, district, rows, pages);
